@@ -1,6 +1,9 @@
 import telebot
 from telebot import types
 import json, os
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+
 # === Настройки ===
 TOKEN = os.getenv("TOKEN")
 ADMINS = [1088460844, 328477968, 7028005668]  # Список ID администраторов (узнать у @userinfobot)
@@ -234,6 +237,11 @@ def show_value(m: types.Message):
 def fallback(m: types.Message):
     # на случай произвольного текста — просто заново показать меню
     send_menu(m.chat.id, m.from_user.id)
+def keepalive():
+    server = HTTPServer(("0.0.0.0", 8000), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+threading.Thread(target=keepalive, daemon=True).start()
 
 # ====== ЗАПУСК ======
 if __name__ == "__main__":
