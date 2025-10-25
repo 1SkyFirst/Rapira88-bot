@@ -68,7 +68,6 @@ def load_data():
     except Exception:
         data = {}
     changed = False
-    # обновим старый формат, если где-то просто строка
     for k, v in DEFAULT_ITEMS.items():
         if k not in data:
             data[k] = v
@@ -186,7 +185,8 @@ def edit_item(m):
     ikb = types.InlineKeyboardMarkup()
     ikb.row(
         types.InlineKeyboardButton("✅ ЧИСТО", callback_data=f"s|{key}|C"),
-        types.InlineKeyboardButton("💦 ГРЯЗНО", callback_data=f"s|{key}|D")
+        types.InlineKeyboardButton("💦 ГРЯЗНО", callback_data=f"s|{key}|D"),
+        types.InlineKeyboardButton("❔ НЕИЗВЕСТНО", callback_data=f"s|{key}|U")
     )
     current = menu_items[key]["value"]
     updated = menu_items[key]["updated"]
@@ -204,7 +204,7 @@ def on_set(c):
         _, key, flag = c.data.split("|", 2)
         if key not in menu_items:
             return bot.answer_callback_query(c.id, "Кнопка не найдена.")
-        val = "ЧИСТО" if flag == "C" else "ГРЯЗНО"
+        val = "ЧИСТО" if flag == "C" else "ГРЯЗНО" if flag == "D" else "НЕИЗВЕСТНО"
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
         menu_items[key] = {"value": val, "updated": timestamp}
         save_data(menu_items)
