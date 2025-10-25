@@ -184,33 +184,58 @@ def step_edit_pick_key(m: types.Message):
     sess = admin_sessions.get(uid)
     if not sess or sess.get("mode") != "edit":
         return
+
     key = (m.text or "").strip()
     if key not in menu_items:
         bot.send_message(m.chat.id, "❗ Такой кнопки нет. Повторите /admin → «Изменить».")
         return
+
     sess["key"] = key
+
+    # показываем выбор статуса
+    ikb = types.InlineKeyboardMarkup()
+    ikb.row(
+        types.InlineKeyboardButton("✅ ЧИСТО", callback_data=f"edit_clean|{key}"),
+        types.InlineKeyboardButton("💦 ГРЯЗНО", callback_data=f"edit_dirty|{key}")
+    )
+
     bot.send_message(
         m.chat.id,
         f"Текущий текст для <b>{key}</b>:\n\n<code>{menu_items[key]}</code>\n\n"
-        f"Отправьте <b>новый текст</b>:"
+        f"Выберите новый статус:",
+        reply_markup=ikb
     )
-    bot.register_next_step_handler(m, step_edit_new_value)
 
-def step_edit_new_value(m: types.Message):
-    uid = m.from_user.id
-    sess = admin_sessions.get(uid)
-    if not sess or sess.get("mode") != "edit" or not sess.get("key"):
+# ====== CALLBACK: выбор ЧИСТО / ГРЯЗНО ======
+@bot.callback_query_handler(func=lambda c: c.data.startswith("edit_"))
+def on_edit_choice(c: types.CallbackQuery):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "Нет прав.")
         return
-    new_value = (m.text or "").strip()
-    if not new_value:
-        bot.send_message(m.chat.id, "❗ Текст не должен быть пустым. Операция отменена.")
+
+    action, key = c.data.split("|", 1)
+    if key not in menu_items:
+        bot.answer_callback_query(c.id, "Кнопка не найдена.")
         return
-    key = sess["key"]
+
+    if action == "edit_clean":
+        new_value = "ЧИСТО"
+    elif action == "edit_dirty":
+        new_value = "ГРЯЗНО"
+    else:
+        bot.answer_callback_query(c.id, "Неизвестное действие.")
+        return
+
     menu_items[key] = new_value
     save_data(menu_items)
-    bot.send_message(m.chat.id, f"✅ Текст для <b>{key}</b> обновлён.")
-    send_menu(m.chat.id, uid)
+    bot.answer_callback_query(c.id, f"Обновлено: {key} = {new_value}")
+    bot.send_message(c.message.chat.id, f"✅ Текст для <b>{key}</b> изменён на <b>{new_value}</b>.")
+
+    # вернуть меню пользователю
+    send_menu(c.message.chat.id, uid)
     admin_sessions.pop(uid, None)
+
 
 # ====== МАСТЕР: УДАЛЕНИЕ ======
 def step_del_pick_key(m: types.Message):
