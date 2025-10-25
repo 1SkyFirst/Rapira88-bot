@@ -238,8 +238,8 @@ def fallback(m: types.Message):
     # на случай произвольного текста — просто заново показать меню
     send_menu(m.chat.id, m.from_user.id)
 def keepalive():
-    server = HTTPServer(("0.0.0.0", 8000), SimpleHTTPRequestHandler)
-    server.serve_forever()
+    port = int(os.getenv("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
 
 threading.Thread(target=keepalive, daemon=True).start()
 
