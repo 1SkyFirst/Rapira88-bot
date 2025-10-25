@@ -39,10 +39,15 @@ if already_running():
 
 # ====== KEEPALIVE ======
 def keepalive():
-    server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
-    server.serve_forever()
+    from flask import Flask
+    app = Flask(__name__)
 
-threading.Thread(target=keepalive, daemon=True).start()
+    @app.route("/")
+    def index():
+        return "Bot is alive!", 200
+
+    port = int(os.getenv("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
 
 # ====== ФАЙЛЫ ДАННЫХ ======
 DEFAULT_ITEMS = {
