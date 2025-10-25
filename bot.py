@@ -265,9 +265,9 @@ def fallback(m: types.Message):
 def keepalive():
     port = int(os.getenv("PORT", 8000))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
 
 threading.Thread(target=keepalive, daemon=True).start()
-
 # ====== ЗАПУСК ======
 if __name__ == "__main__":
     print("✅ Бот запущен.")
