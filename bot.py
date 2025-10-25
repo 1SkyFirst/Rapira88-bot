@@ -4,6 +4,7 @@ import threading
 import psutil
 import sys
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+from datetime import datetime
 import telebot
 from telebot import types
 
@@ -14,11 +15,12 @@ if not TOKEN:
     sys.exit(1)
 
 DATA_FILE = "data.json"
+USERS_FILE = "users.json"
 PORT = int(os.getenv("PORT", 8000))
 ADMINS = [1088460844, 328477968, 7028005668]  # 👑 Администраторы
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-admin_sessions = {}  # uid -> {"mode": "add"/"edit"/"set", "key": str|None}
+admin_sessions = {}
 
 # ====== ПРОВЕРКА ДУБЛИКАТОВ ======
 def already_running():
@@ -35,24 +37,24 @@ if already_running():
     print("⚠️ Bot already running, exiting duplicate instance.")
     sys.exit(0)
 
-# ====== KEEPALIVE (для Render/Timeweb) ======
+# ====== KEEPALIVE ======
 def keepalive():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
 
 threading.Thread(target=keepalive, daemon=True).start()
 
-# ====== ДАННЫЕ ======
+# ====== ФАЙЛЫ ДАННЫХ ======
 DEFAULT_ITEMS = {
-    "СОЛЕДАР": "не задано",
-    "ВЛАДИМИРОВКА": "не задано",
-    "ПОКРОВСКОЕ": "не задано",
-    "БЕЛГОРОВКА": "не задано",
-    "ЯКОВЛЕВКА": "не задано",
-    "ПОПАСНАЯ": "не задано",
-    "КАМЫШЕВАХА": "не задано",
-    "БЕРЕСТОВОЕ": "не задано",
-    "ТРИПОЛЬЕ": "не задано"
+    "СОЛЕДАР": {"value": "не задано", "updated": None},
+    "ВЛАДИМИРОВКА": {"value": "не задано", "updated": None},
+    "ПОКРОВСКОЕ": {"value": "не задано", "updated": None},
+    "БЕЛГОРОВКА": {"value": "не задано", "updated": None},
+    "ЯКОВЛЕВКА": {"value": "не задано", "updated": None},
+    "ПОПАСНАЯ": {"value": "не задано", "updated": None},
+    "КАМЫШЕВАХА": {"value": "не задано", "updated": None},
+    "БЕРЕСТОВОЕ": {"value": "не задано", "updated": None},
+    "ТРИПОЛЬЕ": {"value": "не задано", "updated": None}
 }
 
 def load_data():
@@ -63,14 +65,16 @@ def load_data():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception as e:
-        print("⚠️ Ошибка чтения data.json:", e)
+    except Exception:
         data = {}
-    # дозальём недостающие дефолтные ключи, существующие значения не трогаем
     changed = False
+    # обновим старый формат, если где-то просто строка
     for k, v in DEFAULT_ITEMS.items():
         if k not in data:
             data[k] = v
+            changed = True
+        elif isinstance(data[k], str):
+            data[k] = {"value": data[k], "updated": None}
             changed = True
     if changed:
         save_data(data)
@@ -80,7 +84,21 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return []
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f)
+
 menu_items = load_data()
+subscribers = load_users()
 
 # ====== ВСПОМОГАТЕЛЬНЫЕ ======
 def is_admin(uid): 
@@ -101,7 +119,6 @@ def build_keyboard_two_per_row(labels, extra_last_row=None):
     return kb
 
 def send_menu(chat_id, uid=None):
-    # меню в 2 столбца
     kb = build_keyboard_two_per_row(list(menu_items.keys()),
                                     extra_last_row=(["⚙️ Админ-панель"] if is_admin(uid) else None))
     bot.send_message(chat_id, "📋 Выберите пункт:", reply_markup=kb)
@@ -109,7 +126,12 @@ def send_menu(chat_id, uid=None):
 # ====== СТАРТ ======
 @bot.message_handler(commands=['start'])
 def start(m):
-    send_menu(m.chat.id, m.from_user.id)
+    uid = m.from_user.id
+    if uid not in subscribers:
+        subscribers.append(uid)
+        save_users(subscribers)
+        print(f"👤 Новый подписчик: {uid}")
+    send_menu(m.chat.id, uid)
 
 # ====== АДМИН-ПАНЕЛЬ ======
 @bot.message_handler(func=lambda m: m.text == "⚙️ Админ-панель")
@@ -121,7 +143,6 @@ def admin_panel(m):
 
 @bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
 def back(m):
-    # сбросим возможные сессии редактирования
     admin_sessions.pop(m.from_user.id, None)
     send_menu(m.chat.id, m.from_user.id)
 
@@ -141,13 +162,13 @@ def add_new(m):
     elif key in menu_items:
         bot.send_message(m.chat.id, "⚠️ Такая кнопка уже есть.")
     else:
-        menu_items[key] = "не задано"
+        menu_items[key] = {"value": "не задано", "updated": None}
         save_data(menu_items)
         bot.send_message(m.chat.id, f"✅ Добавлена кнопка '<b>{key}</b>'.", parse_mode="HTML")
     admin_sessions.pop(m.from_user.id, None)
     send_menu(m.chat.id, m.from_user.id)
 
-# ====== ИЗМЕНЕНИЕ (ШАГ 1: выбор ключа) ======
+# ====== ИЗМЕНЕНИЕ ======
 @bot.message_handler(func=lambda m: m.text == "✏️ Изменить")
 def edit_prompt(m):
     if not is_admin(m.from_user.id): 
@@ -156,10 +177,6 @@ def edit_prompt(m):
     kb = build_keyboard_two_per_row(list(menu_items.keys()), extra_last_row=["⬅️ Назад"])
     bot.send_message(m.chat.id, "Выберите пункт для изменения:", reply_markup=kb)
 
-# ВАЖНО: обработчик просмотра должен быть НИЖЕ обработчиков редактирования
-# и учитывать, что админ может быть в режиме edit/set
-
-# ====== ИЗМЕНЕНИЕ (ШАГ 2: показать ЧИСТО/ГРЯЗНО) ======
 @bot.message_handler(func=lambda m: is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") == "edit")
 def edit_item(m):
     key = (m.text or "").strip()
@@ -167,18 +184,20 @@ def edit_item(m):
         return bot.send_message(m.chat.id, "❗ Такой кнопки нет. Вернитесь и выберите из списка.")
     admin_sessions[m.from_user.id] = {"mode": "set", "key": key}
     ikb = types.InlineKeyboardMarkup()
-    # callback_data должна быть короткой (лимит ~64 байта)
     ikb.row(
         types.InlineKeyboardButton("✅ ЧИСТО", callback_data=f"s|{key}|C"),
         types.InlineKeyboardButton("💦 ГРЯЗНО", callback_data=f"s|{key}|D")
     )
+    current = menu_items[key]["value"]
+    updated = menu_items[key]["updated"]
+    updated_text = f"\n🕓 Последнее изменение: {updated}" if updated else ""
     bot.send_message(
         m.chat.id,
-        f"Изменяем <b>{key}</b>.\nТекущее значение: <b>{menu_items[key]}</b>\nВыберите новое:",
+        f"Изменяем <b>{key}</b>.\nТекущее значение: <b>{current}</b>{updated_text}\n\nВыберите новое:",
         reply_markup=ikb
     )
 
-# ====== INLINE CALLBACK: установить значение ======
+# ====== CALLBACK: установка и рассылка ======
 @bot.callback_query_handler(func=lambda c: c.data.startswith("s|"))
 def on_set(c):
     try:
@@ -186,19 +205,38 @@ def on_set(c):
         if key not in menu_items:
             return bot.answer_callback_query(c.id, "Кнопка не найдена.")
         val = "ЧИСТО" if flag == "C" else "ГРЯЗНО"
-        menu_items[key] = val
+        timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+        menu_items[key] = {"value": val, "updated": timestamp}
         save_data(menu_items)
+
+        # Отправляем уведомление всем подписчикам
+        text = f"⚠️ <b>Внимание!</b>\n{key}: <b>{val}</b>\n🕓 {timestamp}"
+        for uid in list(subscribers):
+            try:
+                bot.send_message(uid, text, parse_mode="HTML")
+            except Exception as e:
+                if "Forbidden" in str(e) or "bot was blocked" in str(e):
+                    subscribers.remove(uid)
+                    save_users(subscribers)
+
         bot.answer_callback_query(c.id, f"{key} → {val}")
         bot.send_message(c.message.chat.id, f"✅ {key}: <b>{val}</b>", parse_mode="HTML")
         admin_sessions.pop(c.from_user.id, None)
         send_menu(c.message.chat.id, c.from_user.id)
+
     except Exception as e:
         bot.answer_callback_query(c.id, f"Ошибка: {e}")
 
-# ====== ПРОСМОТР (обычный пользователь/админ вне режима редактирования) ======
+# ====== ПРОСМОТР ======
 @bot.message_handler(func=lambda m: (m.text in menu_items) and not (is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") in ("edit","set")))
 def show_item(m):
-    bot.send_message(m.chat.id, f"{m.text}: <b>{menu_items[m.text]}</b>")
+    item = menu_items[m.text]
+    val = item["value"]
+    updated = item.get("updated")
+    if updated:
+        bot.send_message(m.chat.id, f"{m.text}: <b>{val}</b>\n🕓 Последнее изменение: {updated}")
+    else:
+        bot.send_message(m.chat.id, f"{m.text}: <b>{val}</b>\n🕓 Ещё не изменялось")
 
 # ====== ПРОЧЕЕ ======
 @bot.message_handler(func=lambda m: True)
