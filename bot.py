@@ -33,6 +33,7 @@ def already_running():
         except Exception:
             continue
     return False
+
 if already_running():
     print("⚠️ Bot already running, exiting duplicate instance.")
     sys.exit(0)
@@ -75,36 +76,35 @@ subscribers = load_json(USERS_FILE, [])
 
 def save_data(): save_json(DATA_FILE, menu_items)
 def save_users(): save_json(USERS_FILE, subscribers)
-
 def is_admin(uid): return uid in ADMINS
 
-# === ПОМОЩНИКИ ===
+# === ВСПОМОГАТЕЛЬНЫЕ ===
 def status_emoji(val):
     if val == "ЧИСТО": return "🟩"
     elif val == "ГРЯЗНО": return "🟥"
     else: return "⬜"
 
-def build_keyboard(items, uid=None, admin=False):
+def build_keyboard(items, uid=None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     row = []
     for i, (name, info) in enumerate(items.items(), 1):
-        label = f"{status_emoji(info['value'])} {name}" if admin else name
+        label = f"{status_emoji(info['value'])} {name}"
         row.append(types.KeyboardButton(label))
         if len(row) == 2:
             kb.row(*row)
             row = []
     if row: kb.row(*row)
-    if admin:
-        kb.row(types.KeyboardButton("➕ Добавить"), types.KeyboardButton("⬅️ Назад"))
+    if is_admin(uid):
+        kb.row(types.KeyboardButton("➕ Добавить"), types.KeyboardButton("➖ Удалить"))
+        kb.row(types.KeyboardButton("⬅️ Назад"))
     return kb
 
-# === СООБЩЕНИЯ ===
 def send_menu(chat_id, uid=None):
-    kb = build_keyboard(menu_items, uid, admin=is_admin(uid))
+    kb = build_keyboard(menu_items, uid)
     if is_admin(uid):
-        bot.send_message(chat_id, "🧰 Панель администратора:\n(нажмите пункт для смены статуса)", reply_markup=kb)
+        bot.send_message(chat_id, "🧰 Панель администратора\n(нажмите пункт для смены статуса):", reply_markup=kb)
     else:
-        bot.send_message(chat_id, "📋 Выберите пункт:", reply_markup=kb)
+        bot.send_message(chat_id, "📋 Состояние:", reply_markup=kb)
 
 # === СТАРТ ===
 @bot.message_handler(commands=["start"])
@@ -115,14 +115,7 @@ def start(m):
         save_users()
     send_menu(m.chat.id, uid)
 
-# === АДМИН-КЛАВИША ===
-@bot.message_handler(func=lambda m: m.text == "⚙️ Рапира" or m.text == "⚙️ Админ-панель")
-def admin_panel(m):
-    if not is_admin(m.from_user.id):
-        return bot.send_message(m.chat.id, "🚫 Нет прав.")
-    send_menu(m.chat.id, m.from_user.id)
-
-# === ДОБАВЛЕНИЕ НОВОЙ ===
+# === ДОБАВЛЕНИЕ ===
 @bot.message_handler(func=lambda m: m.text == "➕ Добавить")
 def add_prompt(m):
     if not is_admin(m.from_user.id): return
@@ -132,12 +125,49 @@ def add_prompt(m):
 def add_new(m):
     key = m.text.strip().upper()
     if key in menu_items:
-        bot.send_message(m.chat.id, "⚠️ Такой пункт уже есть.")
+        bot.send_message(m.chat.id, "⚠️ Такой пункт уже существует.")
     else:
         menu_items[key] = {"value": "не задано", "updated": None}
         save_data()
         bot.send_message(m.chat.id, f"✅ Добавлен пункт <b>{key}</b>.")
     send_menu(m.chat.id, m.from_user.id)
+
+# === УДАЛЕНИЕ ===
+delete_mode = {}
+
+@bot.message_handler(func=lambda m: m.text == "➖ Удалить")
+def delete_prompt(m):
+    if not is_admin(m.from_user.id): return
+    delete_mode[m.from_user.id] = True
+    bot.send_message(m.chat.id, "🗑 Выберите пункт для удаления:")
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row = []
+    for i, name in enumerate(menu_items.keys(), 1):
+        row.append(types.KeyboardButton(name))
+        if len(row) == 2:
+            kb.row(*row)
+            row = []
+    if row: kb.row(*row)
+    kb.row(types.KeyboardButton("❌ Отмена"))
+    bot.send_message(m.chat.id, "Выберите, что удалить:", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: delete_mode.get(m.from_user.id, False))
+def delete_item(m):
+    uid = m.from_user.id
+    if m.text == "❌ Отмена":
+        delete_mode[uid] = False
+        bot.send_message(m.chat.id, "🚫 Отменено.")
+        return send_menu(m.chat.id, uid)
+
+    key = m.text.strip().upper()
+    if key not in menu_items:
+        bot.send_message(m.chat.id, "❗ Такого пункта нет.")
+    else:
+        del menu_items[key]
+        save_data()
+        bot.send_message(m.chat.id, f"🗑 Удалён пункт <b>{key}</b>.")
+    delete_mode[uid] = False
+    send_menu(m.chat.id, uid)
 
 # === НАЗАД ===
 @bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
@@ -145,52 +175,47 @@ def back(m):
     bot.send_message(m.chat.id, "↩️ Возврат в обычное меню.")
     send_menu(m.chat.id, m.from_user.id)
 
-# === ПЕРЕКЛЮЧЕНИЕ СТАТУСОВ ===
+# === ПЕРЕКЛЮЧЕНИЕ / ПРОСМОТР ===
 @bot.message_handler(func=lambda m: any(name in m.text for name in menu_items.keys()))
 def toggle_status(m):
     uid = m.from_user.id
-    # Игнорировать, если не админ
-    if not is_admin(uid):
-        key = next((name for name in menu_items if name in m.text), None)
-        if key:
-            val = menu_items[key]["value"]
-            updated = menu_items[key].get("updated")
-            ts = f"\n🕓 Последнее изменение: {updated}" if updated else ""
-            bot.send_message(m.chat.id, f"{key}: <b>{val}</b>{ts}")
-        return
-
     key = next((name for name in menu_items if name in m.text), None)
     if not key: return
 
-    current = menu_items[key]["value"]
-    if current == "ЧИСТО":
-        new_val = "ГРЯЗНО"
-    elif current == "ГРЯЗНО":
-        new_val = "ЧИСТО"
+    if is_admin(uid):
+        # Переключение статуса
+        current = menu_items[key]["value"]
+        new_val = "ЧИСТО" if current != "ЧИСТО" else "ГРЯЗНО"
+        ts = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
+        menu_items[key] = {"value": new_val, "updated": ts}
+        save_data()
+
+        emoji = status_emoji(new_val)
+        text = f"{emoji} <b>{key}</b>: {new_val}\n🕓 {ts}"
+        for uid2 in list(subscribers):
+            try:
+                bot.send_message(uid2, text, parse_mode="HTML")
+            except Exception as e:
+                if "Forbidden" in str(e) or "bot was blocked" in str(e):
+                    subscribers.remove(uid2)
+                    save_users()
+
+        bot.send_message(m.chat.id, f"✅ {key}: {emoji} {new_val}")
+        send_menu(m.chat.id, uid)
+
     else:
-        new_val = "ЧИСТО"
-
-    ts = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
-    menu_items[key] = {"value": new_val, "updated": ts}
-    save_data()
-
-    emoji = status_emoji(new_val)
-    text = f"{emoji} <b>{key}</b>: {new_val}\n🕓 {ts}"
-    for uid2 in list(subscribers):
-        try:
-            bot.send_message(uid2, text, parse_mode="HTML")
-        except Exception as e:
-            if "Forbidden" in str(e) or "bot was blocked" in str(e):
-                subscribers.remove(uid2)
-                save_users()
-
-    bot.send_message(m.chat.id, f"✅ {key}: {emoji} {new_val}")
-    send_menu(m.chat.id, m.from_user.id)
+        # Только просмотр
+        item = menu_items[key]
+        val = item["value"]
+        updated = item.get("updated")
+        emoji = status_emoji(val)
+        ts = f"\n🕓 Последнее изменение: {updated}" if updated else ""
+        bot.send_message(m.chat.id, f"{emoji} {key}: <b>{val}</b>{ts}")
 
 # === ПРОЧЕЕ ===
 @bot.message_handler(func=lambda m: True)
 def fallback(m):
     send_menu(m.chat.id, m.from_user.id)
 
-print("✅ Бот запущен с цветными статусами.")
+print("✅ Бот запущен с цветными статусами и удалением.")
 bot.infinity_polling(skip_pending=True)
