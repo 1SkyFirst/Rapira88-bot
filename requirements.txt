@@ -1,4 +1,4 @@
 pyTelegramBotAPI==4.23.0
 Flask
 psutil
-pytz
+#pytz
