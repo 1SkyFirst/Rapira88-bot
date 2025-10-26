@@ -12,3 +12,4 @@ def already_running():
 if already_running():
     print("⚠️ Bot already running, exiting duplicate instance.")
     sys.exit(0)
+    sys.exit(0)
