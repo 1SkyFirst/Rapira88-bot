@@ -1,14 +1,10 @@
-import os
-import sys
-import psutil
+import time
 
-def already_running():
-    current = psutil.Process().pid
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        if proc.pid != current and 'python' in proc.name() and 'bot.py' in str(proc.cmdline()):
-            return True
-    return False
+print("🧹 Разморозка Timeweb Apps запущена...")
+print("⏳ Контейнер будет удерживаться 60 секунд, потом завершится.")
 
-if already_running():
-    print("⚠️ Bot already running, exiting duplicate instance.")
-    sys.exit(0)
+for i in range(60):
+    print(f"⏱  Прошло {i+1} сек.")
+    time.sleep(1)
+
+print("✅ Старый процесс очищен, контейнер готов к следующему деплою.")
