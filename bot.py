@@ -1,5 +1,3 @@
-print("🧹 Timeweb cleanup: releasing old process")
-PORT = int(os.getenv("PORT", 8001))
-
-# ничего не запускаем — просто завершаем скрипт
-exit(0)
+git add bot.py
+git commit -m "force cleanup"
+git push
