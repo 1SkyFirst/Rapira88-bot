@@ -200,7 +200,7 @@ def toggle_status(m):
                     subscribers.remove(uid2)
                     save_users()
 
-        bot.send_message(m.chat.id, f"✅ {key}: {emoji} {new_val}")
+        bot.send_message(m.chat.id, f"⚠️ {key}: {emoji} {new_val}")
         send_menu(m.chat.id, uid)
 
     else:
@@ -217,5 +217,5 @@ def toggle_status(m):
 def fallback(m):
     send_menu(m.chat.id, m.from_user.id)
 
-print("✅ Бот запущен с цветными статусами и удалением.")
+print("⚠️ Бот запущен с цветными статусами и удалением.")
 bot.infinity_polling(skip_pending=True)
