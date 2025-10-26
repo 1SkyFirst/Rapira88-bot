@@ -5,13 +5,11 @@ import psutil
 import sys
 import time
 from datetime import datetime
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 import telebot
 from telebot import types
 import pytz
 
 # 🕒 Московское время
-
 
 # === НАСТРОЙКИ ===
 TOKEN = os.getenv("TOKEN")
@@ -23,39 +21,19 @@ if not TOKEN:
 os.makedirs("/data", exist_ok=True)
 DATA_FILE = "/data/data.json" if os.path.exists("/data") else "data.json"
 USERS_FILE = "/data/users.json" if os.path.exists("/data") else "users.json"
-
 PORT = int(os.getenv("PORT", 8000))
 ADMINS = [1088460844, 328477968, 7028005668]
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 admin_sessions = {}
 
-# === ПРОВЕРКА ДУБЛИКАТОВ ===
-def already_running():
-    current = psutil.Process().pid
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            if proc.pid != current and 'python' in (proc.name() or '').lower() and 'bot.py' in ' '.join(proc.info.get('cmdline') or []):
-                return True
-        except Exception:
-            continue
-    return False
-
-if already_running():
-    print("⚠️ Bot already running, exiting duplicate instance.")
-    sys.exit(0)
-
-# === KEEPALIVE для Timeweb (порт 8000) ===
+# === KEEPALIVE для Timeweb ===
 def keepalive():
     from flask import Flask
     app = Flask(__name__)
-
     @app.route("/")
-    def index():
-        return "Bot is alive!", 200
-
+    def index(): return "Bot is alive!", 200
     app.run(host="0.0.0.0", port=PORT)
-
 threading.Thread(target=keepalive, daemon=True).start()
 
 # === ДАННЫЕ ===
@@ -74,7 +52,6 @@ DEFAULT_ITEMS = {
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
 def load_json(path, default):
     if not os.path.exists(path):
         save_json(path, default)
@@ -88,158 +65,145 @@ def load_json(path, default):
 menu_items = load_json(DATA_FILE, DEFAULT_ITEMS)
 subscribers = load_json(USERS_FILE, [])
 
-def save_data():
-    save_json(DATA_FILE, menu_items)
-
-def save_users():
+# === АВТОВОССТАНОВЛЕНИЕ ПОДПИСЧИКОВ ===
+def ensure_subscribers_persistent():
+    if not subscribers and os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                old_data = json.load(f)
+                if old_data:
+                    subscribers.extend(old_data)
+                    print("♻️ Восстановлены подписчики из существующего файла.")
+        except Exception:
+            pass
+    for admin in ADMINS:
+        if admin not in subscribers:
+            subscribers.append(admin)
     save_json(USERS_FILE, subscribers)
+    print(f"👥 Активных подписчиков: {len(subscribers)}")
+
+ensure_subscribers_persistent()
+
+def save_data(): save_json(DATA_FILE, menu_items)
+def save_users(): save_json(USERS_FILE, subscribers)
 
 # === ВСПОМОГАТЕЛЬНЫЕ ===
-def is_admin(uid):
-    return uid in ADMINS
+def is_admin(uid): return uid in ADMINS
 
-def build_keyboard_two_per_row(labels, extra_last_row=None):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    row = []
-    for i, name in enumerate(labels, 1):
-        row.append(types.KeyboardButton(name))
-        if len(row) == 2:
-            kb.row(*row)
-            row = []
-    if row:
-        kb.row(*row)
-    if extra_last_row:
-        kb.row(*[types.KeyboardButton(x) for x in extra_last_row])
-    return kb
+def emoji_for(val):
+    if val == "ЧИСТО": return "🟩"
+    if val == "ГРЯЗНО": return "🟥"
+    return "⬜"
+
+def auto_subscribe(user_id):
+    """Автоматически подписывает пользователя, если его нет в базе"""
+    if user_id not in subscribers:
+        subscribers.append(user_id)
+        save_users()
+        print(f"➕ Автоподписка: {user_id}")
 
 def send_menu(chat_id, uid=None):
-    kb = build_keyboard_two_per_row(list(menu_items.keys()),
-                                    extra_last_row=(["⚙️ Админ-панель"] if is_admin(uid) else None))
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row = []
+    for i, name in enumerate(menu_items.keys(), 1):
+        row.append(types.KeyboardButton(name))
+        if len(row) == 2: kb.row(*row); row = []
+    if row: kb.row(*row)
+    if is_admin(uid): kb.row(types.KeyboardButton("⚙️ Рапира"))
     bot.send_message(chat_id, "📋 Выберите пункт:", reply_markup=kb)
 
 # === СТАРТ ===
 @bot.message_handler(commands=['start'])
 def start(m):
-    uid = m.from_user.id
-    if uid not in subscribers:
-        subscribers.append(uid)
-        save_users()
-        print(f"👤 Новый подписчик: {uid}")
-    send_menu(m.chat.id, uid)
+    auto_subscribe(m.from_user.id)
+    send_menu(m.chat.id, m.from_user.id)
 
 # === АДМИН-ПАНЕЛЬ ===
-@bot.message_handler(func=lambda m: m.text == "⚙️ Админ-панель")
+@bot.message_handler(func=lambda m: m.text == "⚙️ Рапира")
 def admin_panel(m):
+    auto_subscribe(m.from_user.id)
     if not is_admin(m.from_user.id):
         return bot.send_message(m.chat.id, "🚫 Нет прав.")
-    kb = build_keyboard_two_per_row(["➕ Добавить", "✏️ Изменить"], extra_last_row=["⬅️ Назад"])
-    bot.send_message(m.chat.id, "🔧 Админ-панель:", reply_markup=kb)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(types.KeyboardButton("✏️ Изменить"))
+    kb.row(types.KeyboardButton("⬅️ Назад"))
+    bot.send_message(m.chat.id, "🛠️ Панель управления Рапира:", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
 def back(m):
     admin_sessions.pop(m.from_user.id, None)
     send_menu(m.chat.id, m.from_user.id)
 
-# === ДОБАВЛЕНИЕ ===
-@bot.message_handler(func=lambda m: m.text == "➕ Добавить")
-def add_prompt(m):
-    if not is_admin(m.from_user.id):
-        return
-    admin_sessions[m.from_user.id] = {"mode": "add"}
-    bot.send_message(m.chat.id, "Введите <b>название новой кнопки</b>:", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") == "add")
-def add_new(m):
-    key = (m.text or "").strip()
-    if not key:
-        bot.send_message(m.chat.id, "❗ Пустое название.")
-    elif key in menu_items:
-        bot.send_message(m.chat.id, "⚠️ Такая кнопка уже есть.")
-    else:
-        menu_items[key] = {"value": "не задано", "updated": None}
-        save_data()
-        bot.send_message(m.chat.id, f"✅ Добавлена кнопка <b>{key}</b>.", parse_mode="HTML")
-    admin_sessions.pop(m.from_user.id, None)
-    send_menu(m.chat.id, m.from_user.id)
-
-# === ИЗМЕНЕНИЕ ===
+# === ИЗМЕНЕНИЕ (список с цветами) ===
 @bot.message_handler(func=lambda m: m.text == "✏️ Изменить")
-def edit_prompt(m):
-    if not is_admin(m.from_user.id):
-        return
-    admin_sessions[m.from_user.id] = {"mode": "edit"}
-    kb = build_keyboard_two_per_row(list(menu_items.keys()), extra_last_row=["⬅️ Назад"])
-    bot.send_message(m.chat.id, "Выберите пункт для изменения:", reply_markup=kb)
+def edit_list(m):
+    auto_subscribe(m.from_user.id)
+    if not is_admin(m.from_user.id): return
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row = []
+    for i, (name, info) in enumerate(menu_items.items(), 1):
+        label = f"{emoji_for(info['value'])} {name}"
+        row.append(types.KeyboardButton(label))
+        if len(row) == 2: kb.row(*row); row = []
+    if row: kb.row(*row)
+    kb.row(types.KeyboardButton("⬅️ Назад"))
+    bot.send_message(m.chat.id, "🧩 Нажмите на пункт, чтобы переключить статус:", reply_markup=kb)
+    admin_sessions[m.from_user.id] = {"mode": "toggle"}
 
-@bot.message_handler(func=lambda m: is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") == "edit")
-def edit_item(m):
-    key = (m.text or "").strip()
-    if key not in menu_items:
-        return bot.send_message(m.chat.id, "❗ Такой кнопки нет.")
-    admin_sessions[m.from_user.id] = {"mode": "set", "key": key}
-    ikb = types.InlineKeyboardMarkup()
-    ikb.row(
-        types.InlineKeyboardButton("🟩 ЧИСТО", callback_data=f"s|{key}|C"),
-        types.InlineKeyboardButton("🟥 ГРЯЗНО", callback_data=f"s|{key}|D"),
-        types.InlineKeyboardButton("⬜ НЕИЗВЕСТНО", callback_data=f"s|{key}|U")
-    )
-    current = menu_items[key]["value"]
-    updated = menu_items[key]["updated"]
-    updated_text = f"\n🕓 Последнее изменение: {updated}" if updated else ""
-    bot.send_message(
-        m.chat.id,
-        f"Изменяем <b>{key}</b>\nТекущее значение: <b>{current}</b>{updated_text}\nВыберите новое:",
-        reply_markup=ikb
-    )
+# === ПЕРЕКЛЮЧЕНИЕ СТАТУСА (только ЧИСТО/ГРЯЗНО) ===
+@bot.message_handler(func=lambda m: is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") == "toggle")
+def toggle_status(m):
+    auto_subscribe(m.from_user.id)
+    text = m.text.strip()
+    name = text.replace("🟩","").replace("🟥","").replace("⬜","").strip()
+    if name not in menu_items:
+        return bot.send_message(m.chat.id, "❗ Неизвестный пункт.")
+    current = menu_items[name]["value"]
 
-# === УСТАНОВКА СТАТУСА ===
-@bot.callback_query_handler(func=lambda c: c.data.startswith("s|"))
-def on_set(c):
-    try:
-        _, key, flag = c.data.split("|", 2)
-        if key not in menu_items:
-            return bot.answer_callback_query(c.id, "Кнопка не найдена.")
-        val = "ЧИСТО" if flag == "C" else "ГРЯЗНО" if flag == "D" else "НЕИЗВЕСТНО"
-        moscow_tz = pytz.timezone("Europe/Moscow")
-        timestamp = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M")
-        menu_items[key] = {"value": val, "updated": timestamp}
-        save_data()
+    # если "не задано" — ставим по умолчанию "ЧИСТО"
+    if current == "не задано":
+        new_val = "ЧИСТО"
+    else:
+        new_val = "ГРЯЗНО" if current == "ЧИСТО" else "ЧИСТО"
 
-        emoji = "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
-        text = f"{emoji} <b>{key}</b>: {val}\n🕓 {timestamp}"
-        for uid in list(subscribers):
-            try:
-                bot.send_message(uid, text, parse_mode="HTML")
-            except Exception as e:
-                if "Forbidden" in str(e) or "bot was blocked" in str(e):
-                    subscribers.remove(uid)
-                    save_users()
+    moscow_tz = pytz.timezone("Europe/Moscow")
+    timestamp = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M")
 
-        bot.answer_callback_query(c.id, f"{key} → {val}")
-        bot.send_message(c.message.chat.id, f"✅ {key}: <b>{val}</b>", parse_mode="HTML")
-        admin_sessions.pop(c.from_user.id, None)
-        send_menu(c.message.chat.id, c.from_user.id)
+    menu_items[name] = {"value": new_val, "updated": timestamp}
+    save_data()
 
-    except Exception as e:
-        bot.answer_callback_query(c.id, f"Ошибка: {e}")
+    emoji = emoji_for(new_val)
+    text_msg = f"{emoji} <b>{name}</b>: {new_val}\n🕓 {timestamp}"
+    for uid in list(subscribers):
+        try:
+            bot.send_message(uid, text_msg, parse_mode="HTML")
+        except Exception as e:
+            if "Forbidden" in str(e):
+                subscribers.remove(uid)
+                save_users()
+
+    bot.send_message(m.chat.id, f"✅ Обновлено: {emoji} <b>{name}</b> → {new_val}", parse_mode="HTML")
+    edit_list(m)
 
 # === ПРОСМОТР ===
-@bot.message_handler(func=lambda m: (m.text in menu_items) and not (is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") in ("edit","set")))
+@bot.message_handler(func=lambda m: m.text.replace("🟩","").replace("🟥","").replace("⬜","").strip() in menu_items)
 def show_item(m):
-    item = menu_items[m.text]
-    val = item["value"]
-    updated = item.get("updated")
-    emoji = "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
+    auto_subscribe(m.from_user.id)
+    key = m.text.replace("🟩","").replace("🟥","").replace("⬜","").strip()
+    item = menu_items[key]
+    val, updated = item["value"], item["updated"]
+    emoji = emoji_for(val)
     if updated:
-        bot.send_message(m.chat.id, f"{emoji} {m.text}: <b>{val}</b>\n🕓 Последнее изменение: {updated}")
+        bot.send_message(m.chat.id, f"{emoji} {key}: <b>{val}</b>\n🕓 Последнее изменение: {updated}")
     else:
-        bot.send_message(m.chat.id, f"{emoji} {m.text}: <b>{val}</b>\n🕓 Ещё не изменялось")
+        bot.send_message(m.chat.id, f"{emoji} {key}: <b>{val}</b>\n🕓 Ещё не изменялось")
 
 # === ПРОЧЕЕ ===
 @bot.message_handler(func=lambda m: True)
 def fallback(m):
+    auto_subscribe(m.from_user.id)
     bot.send_message(m.chat.id, "Не понимаю. Используйте кнопки меню.")
     send_menu(m.chat.id, m.from_user.id)
 
-print("✅ Бот запущен (данные сохраняются в /data).")
+print("✅ Бот запущен (⚙️ Рапира, автоподписка всех, только ЧИСТО/ГРЯЗНО, данные в /data).")
 bot.infinity_polling(skip_pending=True)
