@@ -1,20 +1,22 @@
 import os
+import sys
 import json
 import threading
 import psutil
-import sys
 import pytz
 from datetime import datetime
 import telebot
 from telebot import types
 
-# 🕒 Московский часовой пояс
+# ==== ВРЕМЯ (MSK/pytz) ====
 MSK = pytz.timezone("Europe/Moscow")
+def now_str():
+    return datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
 
-# === НАСТРОЙКИ ===
+# ==== НАСТРОЙКИ ====
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    print("❌ TOKEN не задан в переменных окружения")
+    print("❌ TOKEN не задан")
     sys.exit(1)
 
 os.makedirs("/data", exist_ok=True)
@@ -25,35 +27,32 @@ ADMINS = [1088460844, 328477968, 7028005668]
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
-# === ЗАЩИТА ОТ ДУБЛИКАТОВ ===
+# ==== АНТИ-ДУБЛИКАТ ====
 def already_running():
-    current = psutil.Process().pid
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+    me = psutil.Process().pid
+    for p in psutil.process_iter(['pid','name','cmdline']):
         try:
-            if proc.pid != current and 'python' in (proc.name() or '').lower() and 'bot.py' in ' '.join(proc.info.get('cmdline') or []):
+            if p.pid != me and 'python' in (p.name() or '').lower() and 'bot.py' in ' '.join(p.info.get('cmdline') or []):
                 return True
         except Exception:
-            continue
+            pass
     return False
 
 if already_running():
-    print("⚠️ Duplicate instance, exiting.")
+    print("⚠️ Второй экземпляр — выхожу.")
     sys.exit(0)
 
-# === KEEPALIVE для Timeweb ===
+# ==== KEEPALIVE ДЛЯ TIMEWEB ====
 def keepalive():
     from flask import Flask
     app = Flask(__name__)
-
-    @app.route("/")
-    def index():
+    @app.get("/")
+    def ok():
         return "Bot is alive!", 200
-
     app.run(host="0.0.0.0", port=PORT)
-
 threading.Thread(target=keepalive, daemon=True).start()
 
-# === ДАННЫЕ ===
+# ==== ДАННЫЕ ====
 DEFAULT_ITEMS = {
     "СОЛЕДАР": {"value": "не задано", "updated": None},
     "ВЛАДИМИРОВКА": {"value": "не задано", "updated": None},
@@ -81,114 +80,154 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-menu_items = load_json(DATA_FILE, DEFAULT_ITEMS)
-users = load_json(USERS_FILE, {})
+menu = load_json(DATA_FILE, DEFAULT_ITEMS)
+users = load_json(USERS_FILE, {})  # uid -> {"state": "idle"/"adding"/"set", "key": str|None}
 
-# === ВСПОМОГАТЕЛЬНЫЕ ===
-def now_str():
-    return datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
-
+# ==== ХЕЛПЕРЫ ====
 def is_admin(uid): return uid in ADMINS
 
-def make_panel(uid=None):
-    """Создает inline-панель для пользователя"""
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for name, item in menu_items.items():
-        val = item["value"]
-        emoji = "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
-        if is_admin(uid):
-            kb.add(types.InlineKeyboardButton(f"{emoji} {name}", callback_data=f"edit|{name}"))
-        else:
-            kb.add(types.InlineKeyboardButton(f"{emoji} {name}", callback_data=f"view|{name}"))
-    if is_admin(uid):
-        kb.add(types.InlineKeyboardButton("➕ Добавить", callback_data="add_new"))
+def value_emoji(val):
+    return "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
+
+def build_reply_two_cols(labels, tail_buttons=None):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row = []
+    for text in labels:
+        row.append(types.KeyboardButton(text))
+        if len(row) == 2:
+            kb.row(*row); row = []
+    if row: kb.row(*row)
+    if tail_buttons and len(tail_buttons):
+        kb.row(*[types.KeyboardButton(x) for x in tail_buttons])
     return kb
 
+def admin_live_keyboard():
+    # кнопки вида "🟩 СОЛЕДАР", в конце — "➕ Добавить", "⬅️ Назад"
+    labels = [f"{value_emoji(v['value'])} {name}" for name, v in menu.items()]
+    return build_reply_two_cols(labels, ["➕ Добавить", "⬅️ Назад"])
+
+def user_live_keyboard():
+    labels = [f"{value_emoji(v['value'])} {name}" for name, v in menu.items()]
+    return build_reply_two_cols(labels, ["⬅️ Назад"])
+
+def status_choice_keyboard():
+    return build_reply_two_cols(["🟩 ЧИСТО", "🟥 ГРЯЗНО", "⬜ НЕИЗВЕСТНО"], ["⬅️ Отмена"])
+
+def parse_item_button(text):
+    # принимает "🟩 СОЛЕДАР" -> "СОЛЕДАР"
+    return text.split(" ", 1)[1] if " " in text else text
+
+def show_root(chat_id, uid):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(types.KeyboardButton("📍 Рапира"))
+    bot.send_message(chat_id, "Выберите раздел:", reply_markup=kb)
+
+def show_rapira(chat_id, uid):
+    kb = admin_live_keyboard() if is_admin(uid) else user_live_keyboard()
+    bot.send_message(chat_id, "📋 Текущие статусы:", reply_markup=kb)
+
 def save_state():
-    save_json(DATA_FILE, menu_items)
+    save_json(DATA_FILE, menu)
     save_json(USERS_FILE, users)
 
-def update_all_panels():
-    """Редактирует панели у всех пользователей"""
-    for uid, data in list(users.items()):
-        try:
-            bot.edit_message_reply_markup(uid, data["msg_id"], reply_markup=make_panel(uid))
-        except Exception as e:
-            if "message to edit not found" in str(e).lower():
-                continue
-            elif "forbidden" in str(e).lower():
-                users.pop(uid)
-                save_json(USERS_FILE, users)
-
-# === СТАРТ ===
+# ==== СТАРТ ====
 @bot.message_handler(commands=['start'])
 def start(m):
     uid = m.from_user.id
-    msg = bot.send_message(m.chat.id, "📋 Текущие статусы:", reply_markup=make_panel(uid))
-    users[uid] = {"msg_id": msg.id}
+    users.setdefault(uid, {"state": "idle", "key": None})
     save_json(USERS_FILE, users)
+    show_root(m.chat.id, uid)
 
-# === ПРОСМОТР (для обычных пользователей) ===
-@bot.callback_query_handler(func=lambda c: c.data.startswith("view|"))
-def view_item(c):
-    _, name = c.data.split("|", 1)
-    val = menu_items[name]["value"]
-    updated = menu_items[name]["updated"] or "—"
-    emoji = "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
-    bot.answer_callback_query(c.id, f"{emoji} {name}: {val} ({updated})")
+# ==== РУТ-МЕНЮ ====
+@bot.message_handler(func=lambda m: m.text == "⚙️ Рапира")
+def on_rapira(m):
+    show_rapira(m.chat.id, m.from_user.id)
 
-# === ДОБАВЛЕНИЕ ПУНКТА ===
-@bot.callback_query_handler(func=lambda c: c.data == "add_new")
-def add_prompt(c):
-    if not is_admin(c.from_user.id): return
-    bot.answer_callback_query(c.id)
-    bot.send_message(c.message.chat.id, "Введите название нового пункта:")
-    users[c.from_user.id]["mode"] = "add"
+@bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
+def on_back(m):
+    users[m.from_user.id]["state"] = "idle"
+    users[m.from_user.id]["key"] = None
+    save_json(USERS_FILE, users)
+    show_root(m.chat.id, m.from_user.id)
 
-@bot.message_handler(func=lambda m: is_admin(m.from_user.id) and users.get(m.from_user.id, {}).get("mode") == "add")
-def add_new_item(m):
+# ==== ДОБАВИТЬ (только админы, всё через ReplyKeyboard) ====
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить")
+def on_add(m):
+    if not is_admin(m.from_user.id): return
+    users[m.from_user.id]["state"] = "adding"
+    users[m.from_user.id]["key"] = None
+    save_json(USERS_FILE, users)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(types.KeyboardButton("⬅️ Отмена"))
+    bot.send_message(m.chat.id, "Введите название нового пункта:", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: users.get(m.from_user.id, {}).get("state") == "adding")
+def on_add_name(m):
+    if m.text == "⬅️ Отмена":
+        users[m.from_user.id]["state"] = "idle"
+        users[m.from_user.id]["key"] = None
+        save_json(USERS_FILE, users)
+        show_rapira(m.chat.id, m.from_user.id)
+        return
     name = (m.text or "").strip()
     if not name:
-        bot.send_message(m.chat.id, "❗ Пустое название.")
+        bot.send_message(m.chat.id, "❗ Пустое имя. Введите снова.")
         return
-    if name in menu_items:
-        bot.send_message(m.chat.id, "⚠️ Уже существует.")
+    if name in menu:
+        bot.send_message(m.chat.id, "⚠️ Уже существует. Введите другое.")
         return
-    menu_items[name] = {"value": "не задано", "updated": None}
-    users[m.from_user.id].pop("mode", None)
+    menu[name] = {"value": "не задано", "updated": None}
+    users[m.from_user.id]["state"] = "idle"
+    users[m.from_user.id]["key"] = None
     save_state()
-    update_all_panels()
-    bot.send_message(m.chat.id, f"✅ Добавлен пункт <b>{name}</b>.", parse_mode="HTML")
+    show_rapira(m.chat.id, m.from_user.id)
 
-# === ИЗМЕНЕНИЕ ===
-@bot.callback_query_handler(func=lambda c: c.data.startswith("edit|"))
-def edit_item(c):
-    if not is_admin(c.from_user.id): return
-    _, name = c.data.split("|", 1)
-    ikb = types.InlineKeyboardMarkup()
-    ikb.row(
-        types.InlineKeyboardButton("🟩 ЧИСТО", callback_data=f"s|{name}|C"),
-        types.InlineKeyboardButton("🟥 ГРЯЗНО", callback_data=f"s|{name}|D"),
-        types.InlineKeyboardButton("⬜ НЕИЗВЕСТНО", callback_data=f"s|{name}|U")
-    )
-    bot.edit_message_text(
-        f"Изменяем <b>{name}</b>\nТекущее: {menu_items[name]['value']}",
-        chat_id=c.message.chat.id,
-        message_id=c.message.id,
-        reply_markup=ikb,
-        parse_mode="HTML"
-    )
+# ==== ВЫБОР ПУНКТА ДЛЯ ИЗМЕНЕНИЯ (админ) или ПРОСМОТР (пользователь) ====
+@bot.message_handler(func=lambda m: any(m.text.startswith(sym) for sym in ("🟩","🟥","⬜")))
+def on_item_click(m):
+    uid = m.from_user.id
+    name = parse_item_button(m.text)
+    if name not in menu:
+        # может быть остаток старой клавы — просто перерисуем
+        show_rapira(m.chat.id, uid)
+        return
+    if is_admin(uid):
+        # показываем выбор статуса (тоже ReplyKeyboard)
+        users[uid]["state"] = "set"
+        users[uid]["key"] = name
+        save_json(USERS_FILE, users)
+        bot.send_message(m.chat.id, f"Изменяем <b>{name}</b> (сейчас: {menu[name]['value']}). Выберите статус:",
+                         reply_markup=status_choice_keyboard(), parse_mode="HTML")
+    else:
+        # у пользователей просто обновим клавиатуру (без текста)
+        show_rapira(m.chat.id, uid)
 
-# === УСТАНОВКА СТАТУСА ===
-@bot.callback_query_handler(func=lambda c: c.data.startswith("s|"))
-def set_status(c):
-    _, name, code = c.data.split("|", 2)
-    val = "ЧИСТО" if code == "C" else "ГРЯЗНО" if code == "D" else "НЕИЗВЕСТНО"
-    emoji = "🟩" if val == "ЧИСТО" else "🟥" if val == "ГРЯЗНО" else "⬜"
-    menu_items[name] = {"value": val, "updated": now_str()}
+# ==== УСТАНОВКА СТАТУСА (ReplyKeyboard) ====
+@bot.message_handler(func=lambda m: users.get(m.from_user.id, {}).get("state") == "set")
+def on_set_status(m):
+    uid = m.from_user.id
+    key = users[uid]["key"]
+    if m.text == "⬅️ Отмена":
+        users[uid]["state"] = "idle"; users[uid]["key"] = None
+        save_json(USERS_FILE, users)
+        show_rapira(m.chat.id, uid)
+        return
+
+    if m.text not in ("🟩 ЧИСТО", "🟥 ГРЯЗНО", "⬜ НЕИЗВЕСТНО"):
+        bot.send_message(m.chat.id, "Выберите один из вариантов на клавиатуре.")
+        return
+
+    val = "ЧИСТО" if "ЧИСТО" in m.text else "ГРЯЗНО" if "ГРЯЗНО" in m.text else "НЕИЗВЕСТНО"
+    menu[key] = {"value": val, "updated": now_str()}
+    users[uid]["state"] = "idle"; users[uid]["key"] = None
     save_state()
-    bot.answer_callback_query(c.id, f"{name}: {val}")
-    update_all_panels()
+    # возвращаемся в живое меню (клавиатура обновится, статусы уже в названиях кнопок)
+    show_rapira(m.chat.id, uid)
 
-print("✅ Бот с live-панелью запущен (автообновление у всех).")
+# ==== ФОЛЛБЭК ====
+@bot.message_handler(func=lambda m: True)
+def fallback(m):
+    show_root(m.chat.id, m.from_user.id)
+
+print("✅ Бот запущен (ReplyKeyboard, live-статусы в кнопках, без инлайна).")
 bot.infinity_polling(skip_pending=True)
