@@ -93,6 +93,7 @@ def save_users(): save_json(USERS_FILE, subscribers)
 
 # === ВСПОМОГАТЕЛЬНЫЕ ===
 def is_admin(uid): return uid in ADMINS
+
 def emoji_for(val):
     if val == "ЧИСТО": return "🟩"
     if val == "ГРЯЗНО": return "🟥"
@@ -153,7 +154,7 @@ def edit_list(m):
     bot.send_message(m.chat.id, "🧩 Нажмите на пункт, чтобы переключить статус:", reply_markup=kb)
     admin_sessions[m.from_user.id] = {"mode": "toggle"}
 
-# === ПЕРЕКЛЮЧЕНИЕ СТАТУСА ===
+# === ПЕРЕКЛЮЧЕНИЕ СТАТУСА (только ЧИСТО/ГРЯЗНО) ===
 @bot.message_handler(func=lambda m: is_admin(m.from_user.id) and admin_sessions.get(m.from_user.id, {}).get("mode") == "toggle")
 def toggle_status(m):
     auto_subscribe(m.from_user.id)
@@ -162,7 +163,13 @@ def toggle_status(m):
     if name not in menu_items:
         return bot.send_message(m.chat.id, "❗ Неизвестный пункт.")
     current = menu_items[name]["value"]
-    new_val = "ГРЯЗНО" if current == "ЧИСТО" else "ЧИСТО"
+
+    # если "не задано" — ставим по умолчанию "ЧИСТО"
+    if current == "не задано":
+        new_val = "ЧИСТО"
+    else:
+        new_val = "ГРЯЗНО" if current == "ЧИСТО" else "ЧИСТО"
+
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     menu_items[name] = {"value": new_val, "updated": timestamp}
     save_data()
@@ -200,4 +207,5 @@ def fallback(m):
     bot.send_message(m.chat.id, "Не понимаю. Используйте кнопки меню.")
     send_menu(m.chat.id, m.from_user.id)
 
-pri
+print("✅ Бот запущен (⚙️ Рапира, автоподписка всех, только ЧИСТО/ГРЯЗНО, данные в /data).")
+bot.infinity_polling(skip_pending=True)
